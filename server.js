@@ -18,18 +18,25 @@ wss.on('connection', (ws) => {
                 const targetUrl = data.url;
                 console.log(`📡 Request: ${targetUrl}`);
 
+                // SSL 인증서 검증 무시 (학교 테스트용으로 안전하게 사용)
+                process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
                 const response = await fetch(targetUrl, {
-                    headers: { 'User-Agent': 'Mozilla/5.0' }
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
                 });
 
                 let html = await response.text();
 
-                // URL rewriting
+                // URL rewriting (링크, 이미지, CSS 등이 깨지지 않게)
                 const baseUrl = new URL(targetUrl);
                 html = html.replace(
                     /(src|href|action)=(["'])([^"']*?)(["'])/gi,
                     (match, attr, q1, path, q2) => {
-                        if (path.startsWith('http') || path.startsWith('//') || path.startsWith('data:')) return match;
+                        if (path.startsWith('http') || path.startsWith('//') || path.startsWith('data:')) {
+                            return match;
+                        }
                         try {
                             const abs = new URL(path, baseUrl).href;
                             return `${attr}=${q1}${abs}${q2}`;
@@ -46,6 +53,7 @@ wss.on('connection', (ws) => {
                 }));
             }
         } catch (err) {
+            console.error(err);
             ws.send(JSON.stringify({ 
                 type: 'error', 
                 message: err.message 
