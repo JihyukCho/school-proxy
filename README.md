@@ -1,1 +1,1 @@
-# school-proxy
+dont use for inappropriate use
