@@ -1,75 +1,80 @@
 const express = require('express');
 const WebSocket = require('ws');
-const fetch = require('node-fetch');
+const net = require('net');
 
 const app = express();
 
-// 🔥 health check
+// Health check (required for Render / hosting)
 app.get('/', (req, res) => {
-  res.send('WebSocket Proxy Running');
+  res.send('WebSocket TCP Bridge Running');
 });
 
-// 🔥 Render 포트 사용
 const server = app.listen(process.env.PORT || 8080, () => {
-  console.log(`🚀 Server started`);
+  console.log('HTTP server running');
 });
 
-// 🔥 WebSocket 연결 (중요)
+// Attach WebSocket to HTTP server
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
-  console.log('✅ Client connected');
+  console.log('Client connected');
 
-  ws.on('message', async (message) => {
+  let tcpSocket = null;
+  let connected = false;
+
+  ws.on('message', (message, isBinary) => {
     try {
-      const data = JSON.parse(message);
+      // First message must be JSON (connection info)
+      if (!connected) {
+        const data = JSON.parse(message.toString());
 
-      if (data.type === 'navigate') {
-        const targetUrl = data.url;
-        console.log(`📡 Request: ${targetUrl}`);
+        const host = data.host;
+        const port = data.port || 25565;
 
-        process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+        console.log(`Connecting to ${host}:${port}`);
 
-        const response = await fetch(targetUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0'
+        tcpSocket = net.connect(port, host, () => {
+          connected = true;
+          console.log('Connected to target server');
+        });
+
+        // TCP → WebSocket (binary)
+        tcpSocket.on('data', (chunk) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(chunk);
           }
         });
 
-        let html = await response.text();
+        tcpSocket.on('close', () => {
+          console.log('TCP connection closed');
+          ws.close();
+        });
 
-        const baseUrl = new URL(targetUrl);
+        tcpSocket.on('error', (err) => {
+          console.error('TCP error:', err.message);
+          ws.close();
+        });
 
-        html = html.replace(
-          /(src|href|action)=(["'])([^"']*?)(["'])/gi,
-          (match, attr, q1, path, q2) => {
-            if (
-              path.startsWith('http') ||
-              path.startsWith('//') ||
-              path.startsWith('data:')
-            ) return match;
-
-            try {
-              return `${attr}=${q1}${new URL(path, baseUrl).href}${q2}`;
-            } catch {
-              return match;
-            }
-          }
-        );
-
-        ws.send(JSON.stringify({
-          type: 'html',
-          url: targetUrl,
-          content: html
-        }));
+      } else {
+        // After connection → raw binary passthrough
+        if (tcpSocket) {
+          tcpSocket.write(message);
+        }
       }
 
     } catch (err) {
-      console.error(err);
-      ws.send(JSON.stringify({
-        type: 'error',
-        message: err.message
-      }));
+      console.error('Error:', err.message);
+      ws.close();
     }
+  });
+
+  ws.on('close', () => {
+    console.log('Client disconnected');
+    if (tcpSocket) tcpSocket.end();
+  });
+
+  ws.on('error', (err) => {
+    console.error('WebSocket error:', err.message);
+    if (tcpSocket) tcpSocket.end();
   });
 });
