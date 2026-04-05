@@ -1,121 +1,63 @@
-const express = require('express');
-const WebSocket = require('ws');
-const net = require('net');
-const fetch = require('node-fetch');
+const WebSocket = require("ws");
+const puppeteer = require("puppeteer");
 
-const app = express();
+const wss = new WebSocket.Server({ port: 8080 });
 
-/* =========================
-   1. HTTP (UI + Proxy)
-========================= */
+console.log("WS running on ws://localhost:8080");
 
-// 홈 (UI)
-app.get('/', (req, res) => {
-  res.send(`
-    <html>
-    <body style="margin:0;font-family:Arial">
-      <div style="background:#111;color:white;padding:10px">
-        <input id="url" style="width:300px" placeholder="https://example.com">
-        <button onclick="go()">Go</button>
-      </div>
-      <script>
-        async function go(){
-          let url=document.getElementById("url").value;
-          if(!url.startsWith("http")) url="https://"+url;
+wss.on("connection", async (ws) => {
 
-          const res=await fetch("/proxy?url="+encodeURIComponent(url));
-          const html=await res.text();
-
-          document.open();
-          document.write(html);
-          document.close();
-        }
-      </script>
-    </body>
-    </html>
-  `);
-});
-
-// 🔥 핵심: 웹 프록시
-app.get('/proxy', async (req, res) => {
-  try {
-    const target = req.query.url;
-    if (!target) return res.send("No URL");
-
-    const response = await fetch(target, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0'
-      }
+    const browser = await puppeteer.launch({
+        headless: "new",
+        defaultViewport: { width: 1280, height: 720 }
     });
 
-    let html = await response.text();
-    const base = new URL(target);
+    const page = await browser.newPage();
+    await page.goto("https://example.com");
 
-    // 링크 rewrite
-    html = html.replace(
-      /(src|href|action)=["']([^"']+)["']/gi,
-      (match, attr, path) => {
+    // 🎥 화면 스트리밍
+    const stream = async () => {
+        if (ws.readyState !== 1) return;
+
+        const screenshot = await page.screenshot({
+            encoding: "base64"
+        });
+
+        ws.send(JSON.stringify({
+            type: "frame",
+            data: screenshot
+        }));
+
+        setTimeout(stream, 100); // FPS 조절 (100ms = ~10fps)
+    };
+
+    stream();
+
+    // 🎮 입력 처리
+    ws.on("message", async (msg) => {
         try {
-          const abs = new URL(path, base).href;
-          return `${attr}="/proxy?url=${encodeURIComponent(abs)}"`;
-        } catch {
-          return match;
-        }
-      }
-    );
+            const data = JSON.parse(msg);
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.send(html);
+            if (data.type === "click") {
+                await page.mouse.click(data.x, data.y);
+            }
 
-  } catch (err) {
-    res.send("Error: " + err.message);
-  }
-});
+            if (data.type === "move") {
+                await page.mouse.move(data.x, data.y);
+            }
 
-/* =========================
-   2. 서버 시작
-========================= */
+            if (data.type === "scroll") {
+                await page.mouse.wheel({ deltaY: data.delta });
+            }
 
-const server = app.listen(process.env.PORT || 8080, () => {
-  console.log("Server running");
-});
+            if (data.type === "key") {
+                await page.keyboard.type(data.key);
+            }
 
-/* =========================
-   3. WebSocket (Minecraft bridge)
-========================= */
+        } catch (e) {}
+    });
 
-const wss = new WebSocket.Server({ server });
-
-wss.on('connection', (ws) => {
-  let tcpSocket = null;
-  let connected = false;
-
-  ws.on('message', (message) => {
-    try {
-      if (!connected) {
-        const data = JSON.parse(message.toString());
-
-        tcpSocket = net.connect(data.port || 25565, data.host, () => {
-          connected = true;
-        });
-
-        tcpSocket.on('data', (chunk) => {
-          ws.send(chunk);
-        });
-
-        tcpSocket.on('close', () => ws.close());
-        tcpSocket.on('error', () => ws.close());
-
-      } else {
-        tcpSocket.write(message);
-      }
-
-    } catch (err) {
-      ws.close();
-    }
-  });
-
-  ws.on('close', () => {
-    if (tcpSocket) tcpSocket.end();
-  });
+    ws.on("close", async () => {
+        await browser.close();
+    });
 });
