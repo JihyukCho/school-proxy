@@ -1,80 +1,60 @@
 const express = require('express');
-const WebSocket = require('ws');
-const net = require('net');
+const fetch = require('node-fetch');
 
 const app = express();
 
-// Health check (required for Render / hosting)
 app.get('/', (req, res) => {
-  res.send('WebSocket TCP Bridge Running');
+  res.send(`
+    <html>
+    <body style="margin:0">
+      <div style="background:#111;color:white;padding:10px">
+        <input id="url" style="width:300px" placeholder="https://example.com">
+        <button onclick="go()">Go</button>
+      </div>
+      <div id="content"></div>
+
+      <script>
+        async function go() {
+          const url = document.getElementById('url').value;
+
+          const res = await fetch('/proxy?url=' + encodeURIComponent(url));
+          const html = await res.text();
+
+          document.open();
+          document.write(html);
+          document.close();
+        }
+      </script>
+    </body>
+    </html>
+  `);
 });
 
-const server = app.listen(process.env.PORT || 8080, () => {
-  console.log('HTTP server running');
-});
+app.get('/proxy', async (req, res) => {
+  try {
+    const target = req.query.url;
+    const response = await fetch(target);
 
-// Attach WebSocket to HTTP server
-const wss = new WebSocket.Server({ server });
+    let html = await response.text();
+    const base = new URL(target);
 
-wss.on('connection', (ws) => {
-  console.log('Client connected');
-
-  let tcpSocket = null;
-  let connected = false;
-
-  ws.on('message', (message, isBinary) => {
-    try {
-      // First message must be JSON (connection info)
-      if (!connected) {
-        const data = JSON.parse(message.toString());
-
-        const host = data.host;
-        const port = data.port || 25565;
-
-        console.log(`Connecting to ${host}:${port}`);
-
-        tcpSocket = net.connect(port, host, () => {
-          connected = true;
-          console.log('Connected to target server');
-        });
-
-        // TCP → WebSocket (binary)
-        tcpSocket.on('data', (chunk) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(chunk);
-          }
-        });
-
-        tcpSocket.on('close', () => {
-          console.log('TCP connection closed');
-          ws.close();
-        });
-
-        tcpSocket.on('error', (err) => {
-          console.error('TCP error:', err.message);
-          ws.close();
-        });
-
-      } else {
-        // After connection → raw binary passthrough
-        if (tcpSocket) {
-          tcpSocket.write(message);
+    html = html.replace(
+      /(src|href|action)=["']([^"']+)["']/gi,
+      (m, attr, path) => {
+        try {
+          const abs = new URL(path, base).href;
+          return `${attr}="/proxy?url=${encodeURIComponent(abs)}"`;
+        } catch {
+          return m;
         }
       }
+    );
 
-    } catch (err) {
-      console.error('Error:', err.message);
-      ws.close();
-    }
-  });
+    res.send(html);
 
-  ws.on('close', () => {
-    console.log('Client disconnected');
-    if (tcpSocket) tcpSocket.end();
-  });
-
-  ws.on('error', (err) => {
-    console.error('WebSocket error:', err.message);
-    if (tcpSocket) tcpSocket.end();
-  });
+  } catch (err) {
+    res.send("Error: " + err.message);
+  }
 });
+
+app.listen(process.env.PORT || 3000);
